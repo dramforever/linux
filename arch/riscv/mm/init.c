@@ -1409,7 +1409,7 @@ static void __init reserve_crashkernel(void)
 
 	int ret = 0;
 
-	if (!IS_ENABLED(CONFIG_KEXEC_CORE))
+	if (!IS_ENABLED(CONFIG_CRASH_RESERVE))
 		return;
 	/*
 	 * Don't reserve a region for a crash kernel on a crash kernel

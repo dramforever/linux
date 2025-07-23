@@ -1166,7 +1166,9 @@ static const struct irq_chip starfive_irq_chip = {
 	.irq_mask_ack = starfive_irq_mask_ack,
 	.irq_unmask = starfive_irq_unmask,
 	.irq_set_type = starfive_irq_set_type,
-	.flags = IRQCHIP_IMMUTABLE | IRQCHIP_SET_TYPE_MASKED,
+	.irq_set_wake = irq_chip_set_wake_parent,
+	.flags = IRQCHIP_IMMUTABLE | IRQCHIP_SET_TYPE_MASKED |
+		 IRQCHIP_MASK_ON_SUSPEND,
 	GPIOCHIP_IRQ_RESOURCE_HELPERS,
 };
 

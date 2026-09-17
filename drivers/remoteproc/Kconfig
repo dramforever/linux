@@ -311,6 +311,16 @@ config RCAR_REMOTEPROC
 	  This can be either built-in or a loadable module.
 	  If compiled as module (M), the module name is rcar_rproc.
 
+config RISCV_SBI_HSM_RPROC
+	tristate "RISC-V SBI HSM remoteproc support"
+	depends on RISCV_SBI
+	help
+	  Say y here to support certain RISC-V systems containing
+	  firmware-managed harts that are not suitable for use as CPUs from the
+	  perspective of a rich operating system such as Linux.
+
+	  If compiled as module, the module name is riscv_sbi_hsm_rproc.
+
 config ST_REMOTEPROC
 	tristate "ST remoteproc support"
 	depends on ARCH_STI

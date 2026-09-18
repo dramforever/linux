@@ -3,7 +3,9 @@
  */
 
 #include <linux/module.h>
+#include <linux/msi.h>
 #include <linux/of.h>
+#include <linux/of_irq.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/remoteproc.h>
 #include <linux/platform_device.h>
@@ -16,28 +18,9 @@
 
 struct riscv_sbi_hsm_rproc {
 	struct device *dev;
+	struct msi_msg msi_msg;
+	int irq;
 };
-
-static inline int rproc_mem_entry_memremap_wb(struct rproc *rproc,
-					     struct rproc_mem_entry *mem)
-{
-	mem->va = memremap(mem->dma, mem->len, MEMREMAP_WB);
-	if (!mem->va) {
-		dev_err(&rproc->dev, "Unable to map memory region: %pa+%zx\n",
-			&mem->dma, mem->len);
-		return -ENOMEM;
-	}
-
-	mem->is_iomem = false;
-	return 0;
-}
-
-static inline int rproc_mem_entry_memunmap(struct rproc *rproc,
-					   struct rproc_mem_entry *mem)
-{
-	memunmap(mem->va);
-	return 0;
-}
 
 static int riscv_sbi_hsm_rproc_prepare(struct rproc *rproc)
 {
@@ -54,16 +37,38 @@ static int riscv_sbi_hsm_rproc_prepare(struct rproc *rproc)
 			break;
 
 		mem = rproc_mem_entry_init(priv->dev, NULL, (dma_addr_t)res.start,
-					resource_size(&res), res.start,
-					rproc_mem_entry_memremap_wb,
-					rproc_mem_entry_memunmap,
-					"%.*s", strchrnul(res.name, '@') - res.name,
-					res.name);
+					   resource_size(&res), res.start,
+					   rproc_mem_entry_ioremap_wc,
+					   rproc_mem_entry_iounmap,
+					   "%.*s", strchrnul(res.name, '@') - res.name,
+					   res.name);
 
 		rproc_coredump_add_segment(rproc, res.start, resource_size(&res));
 		rproc_add_carveout(rproc, mem);
 	}
 
+	return 0;
+}
+
+struct fw_rsc_msi {
+	u32 data;
+	u64 addr;
+} __packed;
+
+static int riscv_sbi_hsm_rproc_handle_rsc(struct rproc *rproc, u32 rsc_type,
+					  void *ptr, int offset, int avail)
+{
+	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
+	struct device *dev = priv->dev;
+	struct fw_rsc_msi *rsc = ptr;
+
+	if (sizeof(*rsc) > avail) {
+		dev_err(dev, "MSI resource table entry size is too small\n");
+		return -EINVAL;
+	}
+
+	rsc->addr = ((u64)priv->msi_msg.address_hi << 32) | priv->msi_msg.address_lo;
+	rsc->data = priv->msi_msg.data;
 
 	return 0;
 }
@@ -74,7 +79,7 @@ static int riscv_sbi_hsm_rproc_start(struct rproc *rproc)
 	struct device *dev = priv->dev;
 	struct sbiret ret;
 
-	dev_info(dev, "Starting a secondary hart at %#llx", rproc->bootaddr);
+	dev_info(dev, "Starting a secondary hart 1 at %#llx", rproc->bootaddr);
 
 	ret = sbi_ecall(SBI_EXT_HSM, SBI_EXT_HSM_HART_START,
 			1, (unsigned long)rproc->bootaddr, -1,
@@ -88,7 +93,7 @@ static int riscv_sbi_hsm_rproc_stop(struct rproc *rproc)
 	struct device *dev = priv->dev;
 	struct sbiret ret;
 
-	dev_info(dev, "Stopping secondary hart");
+	dev_info(dev, "Stopping secondary hart 1");
 
 	ret = sbi_ecall(SBI_EXT_REMOTE_STOP, SBI_REMOTE_STOP_SYNC,
 			1, 1,
@@ -96,11 +101,47 @@ static int riscv_sbi_hsm_rproc_stop(struct rproc *rproc)
 	return sbi_err_map_linux_errno(ret.error);
 }
 
+static void riscv_sbi_hsm_rproc_kick(struct rproc *rproc, int vqid)
+{
+	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
+	struct device *dev = priv->dev;
+	dev_info(dev, "stub %s(%d)\n", __func__, vqid);
+}
+
+static void riscv_sbi_hsm_rproc_write_msi_msg(struct msi_desc *desc, struct msi_msg *msg)
+{
+	struct device *dev = msi_desc_to_dev(desc);
+	struct rproc *rproc = dev_get_drvdata(dev);
+	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
+
+	priv->msi_msg = *msg;
+}
+
 static const struct rproc_ops riscv_sbi_hsm_rproc_ops = {
-	.prepare	= riscv_sbi_hsm_rproc_prepare,
-	.start		= riscv_sbi_hsm_rproc_start,
-	.stop		= riscv_sbi_hsm_rproc_stop,
+	.prepare = riscv_sbi_hsm_rproc_prepare,
+	.handle_rsc = riscv_sbi_hsm_rproc_handle_rsc,
+	.start = riscv_sbi_hsm_rproc_start,
+	.stop = riscv_sbi_hsm_rproc_stop,
+	.kick = riscv_sbi_hsm_rproc_kick,
 };
+
+static irqreturn_t riscv_sbi_hsm_rproc_irq(int irq, void *dev_id)
+{
+	struct rproc *rproc = dev_id;
+	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
+
+	pr_info("%s: IRQ\n", __func__);
+	irqreturn_t ret = rproc_vq_interrupt(rproc, 0) | rproc_vq_interrupt(rproc, 1);
+	enable_irq(priv->irq);
+	return ret;
+}
+
+static void riscv_sbi_hsm_rproc_free_msis(void *data)
+{
+	struct device *dev = data;
+
+	platform_device_msi_free_irqs_all(dev);
+}
 
 static int riscv_sbi_hsm_rproc_probe(struct platform_device *pdev)
 {
@@ -119,14 +160,30 @@ static int riscv_sbi_hsm_rproc_probe(struct platform_device *pdev)
 	if (!rproc)
 		return -ENOMEM;
 
+	platform_set_drvdata(pdev, rproc);
 	priv = rproc->priv;
 	priv->dev = dev;
+
+	of_msi_configure(dev, dev->of_node);
+
+	ret = platform_device_msi_init_and_alloc_irqs(dev, 1, riscv_sbi_hsm_rproc_write_msi_msg);
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "Failed to allocate MSIs\n");
+
+	devm_add_action(dev, riscv_sbi_hsm_rproc_free_msis, dev);
+
+	priv->irq = msi_get_virq(dev, 0);
+	if (!priv->irq)
+		return dev_err_probe(dev, -ENODEV, "Failed to get MSI irq\n");
+
+	ret = devm_request_threaded_irq(dev, priv->irq, NULL, riscv_sbi_hsm_rproc_irq,
+					IRQF_SHARED | IRQF_COND_ONESHOT, "MSI", rproc);
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "Failed to set up MSI\n");
 
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to set DMA mask\n");
-
-	platform_set_drvdata(pdev, rproc);
 
 	ret = devm_rproc_add(dev, rproc);
 	if (ret)

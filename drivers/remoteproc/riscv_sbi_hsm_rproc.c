@@ -2,6 +2,7 @@
 /*
  */
 
+#include <linux/devm-helpers.h>
 #include <linux/module.h>
 #include <linux/msi.h>
 #include <linux/of.h>
@@ -18,7 +19,9 @@
 
 struct riscv_sbi_hsm_rproc {
 	struct device *dev;
+	struct rproc *rproc;
 	struct msi_msg msi_msg;
+	struct work_struct irq_work;
 	int irq;
 };
 
@@ -130,10 +133,19 @@ static irqreturn_t riscv_sbi_hsm_rproc_irq(int irq, void *dev_id)
 	struct rproc *rproc = dev_id;
 	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
 
-	pr_info("%s: IRQ\n", __func__);
-	irqreturn_t ret = rproc_vq_interrupt(rproc, 0) | rproc_vq_interrupt(rproc, 1);
-	enable_irq(priv->irq);
-	return ret;
+	schedule_work(&priv->irq_work);
+
+	return IRQ_HANDLED;
+}
+
+static void riscv_sbi_hsm_rproc_irq_work(struct work_struct *work)
+{
+	struct riscv_sbi_hsm_rproc *priv;
+
+	priv = container_of(work, struct riscv_sbi_hsm_rproc, irq_work);
+
+	rproc_vq_interrupt(priv->rproc, 0);
+	rproc_vq_interrupt(priv->rproc, 1);
 }
 
 static void riscv_sbi_hsm_rproc_free_msis(void *data)
@@ -151,6 +163,8 @@ static int riscv_sbi_hsm_rproc_probe(struct platform_device *pdev)
 	struct rproc *rproc;
 	int ret;
 
+	of_msi_configure(dev, dev->of_node);
+
 	ret = rproc_of_parse_firmware(dev, 0, &fw_name);
 	if (ret < 0 && ret != -EINVAL)
 		return dev_err_probe(dev, ret, "Failed to parse firmware-name\n");
@@ -163,8 +177,11 @@ static int riscv_sbi_hsm_rproc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, rproc);
 	priv = rproc->priv;
 	priv->dev = dev;
+	priv->rproc = rproc;
 
-	of_msi_configure(dev, dev->of_node);
+	ret = devm_work_autocancel(dev, &priv->irq_work, riscv_sbi_hsm_rproc_irq_work);
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "Failed to set up irq_work\n");
 
 	ret = platform_device_msi_init_and_alloc_irqs(dev, 1, riscv_sbi_hsm_rproc_write_msi_msg);
 	if (ret < 0)
@@ -176,8 +193,8 @@ static int riscv_sbi_hsm_rproc_probe(struct platform_device *pdev)
 	if (!priv->irq)
 		return dev_err_probe(dev, -ENODEV, "Failed to get MSI irq\n");
 
-	ret = devm_request_threaded_irq(dev, priv->irq, NULL, riscv_sbi_hsm_rproc_irq,
-					IRQF_SHARED | IRQF_COND_ONESHOT, "MSI", rproc);
+	ret = devm_request_irq(dev, priv->irq, riscv_sbi_hsm_rproc_irq,
+			       IRQF_SHARED, "MSI", rproc);
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "Failed to set up MSI\n");
 

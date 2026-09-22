@@ -314,6 +314,7 @@ config RCAR_REMOTEPROC
 config RISCV_SBI_HSM_RPROC
 	tristate "RISC-V SBI HSM remoteproc support"
 	depends on RISCV_SBI
+	depends on 64BIT # For 64-bit WRITE_ONCE
 	help
 	  Say y here to support certain RISC-V systems containing
 	  firmware-managed harts that are not suitable for use as CPUs from the

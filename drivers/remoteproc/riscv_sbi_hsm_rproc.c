@@ -20,8 +20,8 @@
 struct riscv_sbi_hsm_rproc {
 	struct device *dev;
 	struct rproc *rproc;
-	struct msi_msg msi_msg;
 	struct work_struct irq_work;
+	int msi_rsc_offset;
 	int irq;
 };
 
@@ -63,76 +63,23 @@ static int riscv_sbi_hsm_rproc_handle_rsc(struct rproc *rproc, u32 rsc_type,
 {
 	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
 	struct device *dev = priv->dev;
-	struct fw_rsc_msi *rsc = ptr;
 
-	if (sizeof(*rsc) > avail) {
+	if (sizeof(struct fw_rsc_msi) > avail) {
 		dev_err(dev, "MSI resource table entry size is too small\n");
 		return -EINVAL;
 	}
 
-	rsc->addr = ((u64)priv->msi_msg.address_hi << 32) | priv->msi_msg.address_lo;
-	rsc->data = priv->msi_msg.data;
+	priv->msi_rsc_offset = offset;
 
 	return 0;
 }
-
-static int riscv_sbi_hsm_rproc_start(struct rproc *rproc)
-{
-	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
-	struct device *dev = priv->dev;
-	struct sbiret ret;
-
-	dev_info(dev, "Starting a secondary hart 1 at %#llx", rproc->bootaddr);
-
-	ret = sbi_ecall(SBI_EXT_HSM, SBI_EXT_HSM_HART_START,
-			1, (unsigned long)rproc->bootaddr, -1,
-			0, 0, 0);
-	return sbi_err_map_linux_errno(ret.error);
-}
-
-static int riscv_sbi_hsm_rproc_stop(struct rproc *rproc)
-{
-	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
-	struct device *dev = priv->dev;
-	struct sbiret ret;
-
-	dev_info(dev, "Stopping secondary hart 1");
-
-	ret = sbi_ecall(SBI_EXT_REMOTE_STOP, SBI_REMOTE_STOP_SYNC,
-			1, 1,
-			0, 0, 0, 0);
-	return sbi_err_map_linux_errno(ret.error);
-}
-
-static void riscv_sbi_hsm_rproc_kick(struct rproc *rproc, int vqid)
-{
-	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
-	struct device *dev = priv->dev;
-	dev_info(dev, "stub %s(%d)\n", __func__, vqid);
-}
-
-static void riscv_sbi_hsm_rproc_write_msi_msg(struct msi_desc *desc, struct msi_msg *msg)
-{
-	struct device *dev = msi_desc_to_dev(desc);
-	struct rproc *rproc = dev_get_drvdata(dev);
-	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
-
-	priv->msi_msg = *msg;
-}
-
-static const struct rproc_ops riscv_sbi_hsm_rproc_ops = {
-	.prepare = riscv_sbi_hsm_rproc_prepare,
-	.handle_rsc = riscv_sbi_hsm_rproc_handle_rsc,
-	.start = riscv_sbi_hsm_rproc_start,
-	.stop = riscv_sbi_hsm_rproc_stop,
-	.kick = riscv_sbi_hsm_rproc_kick,
-};
 
 static irqreturn_t riscv_sbi_hsm_rproc_irq(int irq, void *dev_id)
 {
 	struct rproc *rproc = dev_id;
 	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
 
+	/* rproc_vq_interrupt() can sleep, so it has to be in a work. */
 	schedule_work(&priv->irq_work);
 
 	return IRQ_HANDLED;
@@ -144,9 +91,108 @@ static void riscv_sbi_hsm_rproc_irq_work(struct work_struct *work)
 
 	priv = container_of(work, struct riscv_sbi_hsm_rproc, irq_work);
 
+	/* Nothing to handle for the return values here */
 	rproc_vq_interrupt(priv->rproc, 0);
 	rproc_vq_interrupt(priv->rproc, 1);
 }
+
+static int riscv_sbi_hsm_rproc_start(struct rproc *rproc)
+{
+	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
+	struct device *dev = priv->dev;
+	struct sbiret srt;
+	int ret;
+
+	ret = request_irq(priv->irq, riscv_sbi_hsm_rproc_irq,
+			  IRQF_SHARED, "MSI", rproc);
+	if (ret < 0) {
+		dev_err(dev, "Failed to set up MSI: %pe\n", ERR_PTR(ret));
+		goto err_free_irq;
+	}
+
+	dev_info(dev, "Starting a secondary hart 3 at %#llx", rproc->bootaddr);
+
+	srt = sbi_ecall(SBI_EXT_HSM, SBI_EXT_HSM_HART_START,
+			3, (unsigned long)rproc->bootaddr, -1,
+			0, 0, 0);
+	ret = sbi_err_map_linux_errno(srt.error);
+	if (ret < 0) {
+		dev_err(dev, "Failed to start hart with HSM: %pe\n", ERR_PTR(ret));
+		goto err_free_irq;
+	}
+
+	return 0;
+
+err_free_irq:
+	free_irq(priv->irq, rproc);
+
+	return ret;
+}
+
+static int riscv_sbi_hsm_rproc_stop(struct rproc *rproc)
+{
+	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
+	struct device *dev = priv->dev;
+	struct sbiret srt;
+	int ret;
+
+	dev_info(dev, "Stopping secondary hart 3");
+
+	srt = sbi_ecall(SBI_EXT_REMOTE_STOP, SBI_REMOTE_STOP_SYNC,
+			1, 3,
+			0, 0, 0, 0);
+	ret = sbi_err_map_linux_errno(srt.error);
+	if (ret < 0) {
+		dev_err(dev, "Failed to stop hart with HSM: %pe\n", ERR_PTR(ret));
+		return ret;
+	}
+
+	/*
+	 * This has to be after stopping, since if the rproc did not stop the
+	 * MSI could still be in use.
+	 */
+	free_irq(priv->irq, rproc);
+
+	return 0;
+}
+
+static void riscv_sbi_hsm_rproc_kick(struct rproc *rproc, int vqid)
+{
+	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
+	struct device *dev = priv->dev;
+	dev_err(dev, "stub %s(%d)\n", __func__, vqid);
+}
+
+static void riscv_sbi_hsm_rproc_write_msi_msg(struct msi_desc *desc, struct msi_msg *msg)
+{
+	struct device *dev = msi_desc_to_dev(desc);
+	struct rproc *rproc = dev_get_drvdata(dev);
+	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
+	struct fw_rsc_msi *rsc;
+
+	if (!rproc->table_ptr) {
+		dev_dbg(dev, "No resource table, no MSI info to update\n");
+		return;
+	}
+
+	if (priv->msi_rsc_offset <= 0) {
+		dev_dbg(dev, "No MSI resource, nothing to update\n");
+		return;
+	}
+
+	dev_dbg(dev, "Updating MSI information %#x -> %#x%08x\n", msg->data, msg->address_hi, msg->address_lo);
+	rsc = (void*)rproc->table_ptr + priv->msi_rsc_offset;
+	WRITE_ONCE(rsc->addr, ((u64)msg->address_hi << 32) | msg->address_lo);
+	WRITE_ONCE(rsc->data, msg->data);
+}
+
+static const struct rproc_ops riscv_sbi_hsm_rproc_ops = {
+	.prepare = riscv_sbi_hsm_rproc_prepare,
+	.handle_rsc = riscv_sbi_hsm_rproc_handle_rsc,
+	.start = riscv_sbi_hsm_rproc_start,
+	.stop = riscv_sbi_hsm_rproc_stop,
+	.kick = riscv_sbi_hsm_rproc_kick,
+};
 
 static void riscv_sbi_hsm_rproc_free_msis(void *data)
 {
@@ -192,11 +238,6 @@ static int riscv_sbi_hsm_rproc_probe(struct platform_device *pdev)
 	priv->irq = msi_get_virq(dev, 0);
 	if (!priv->irq)
 		return dev_err_probe(dev, -ENODEV, "Failed to get MSI irq\n");
-
-	ret = devm_request_irq(dev, priv->irq, riscv_sbi_hsm_rproc_irq,
-			       IRQF_SHARED, "MSI", rproc);
-	if (ret < 0)
-		return dev_err_probe(dev, ret, "Failed to set up MSI\n");
 
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
 	if (ret)

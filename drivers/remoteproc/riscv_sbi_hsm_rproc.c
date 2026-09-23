@@ -23,6 +23,7 @@ struct riscv_sbi_hsm_rproc {
 	struct work_struct irq_work;
 	int msi_rsc_offset;
 	int irq;
+	u32 bootstrap_hart;
 };
 
 static int rproc_mem_entry_memremap_wb(struct rproc *rproc,
@@ -136,10 +137,10 @@ static int riscv_sbi_hsm_rproc_start(struct rproc *rproc)
 		goto err_free_irq;
 	}
 
-	dev_info(dev, "Starting a secondary hart 3 at %#llx", rproc->bootaddr);
+	dev_info(dev, "Starting a secondary hart %u at %#llx", priv->bootstrap_hart, rproc->bootaddr);
 
 	srt = sbi_ecall(SBI_EXT_HSM, SBI_EXT_HSM_HART_START,
-			3, (unsigned long)rproc->bootaddr, -1,
+			priv->bootstrap_hart, (unsigned long)rproc->bootaddr, -1,
 			0, 0, 0);
 	ret = sbi_err_map_linux_errno(srt.error);
 	if (ret < 0) {
@@ -162,10 +163,10 @@ static int riscv_sbi_hsm_rproc_stop(struct rproc *rproc)
 	struct sbiret srt;
 	int ret;
 
-	dev_info(dev, "Stopping secondary hart 3");
+	dev_info(dev, "Stopping secondary hart %u", priv->bootstrap_hart);
 
 	srt = sbi_ecall(SBI_EXT_REMOTE_STOP, SBI_REMOTE_STOP_SYNC,
-			1, 3,
+			1, priv->bootstrap_hart,
 			0, 0, 0, 0);
 	ret = sbi_err_map_linux_errno(srt.error);
 	if (ret < 0) {
@@ -255,6 +256,10 @@ static int riscv_sbi_hsm_rproc_probe(struct platform_device *pdev)
 	priv = rproc->priv;
 	priv->dev = dev;
 	priv->rproc = rproc;
+
+	ret = of_property_read_u32(dev->of_node, "openruyi,bootstrap-hart", &priv->bootstrap_hart);
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "Required openruyi,bootstrap-hart not found\n");
 
 	ret = devm_work_autocancel(dev, &priv->irq_work, riscv_sbi_hsm_rproc_irq_work);
 	if (ret < 0)

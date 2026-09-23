@@ -1344,5 +1344,6 @@
 		firmware-name = "riscv-sbi-hsm-rproc.elf";
 		memory-region = <&meow_region>, <&vdev0vring0>, <&vdev0vring1>;
 		msi-parent = <&simsic>;
+		openruyi,bootstrap-hart = <10>;
 	};
 };

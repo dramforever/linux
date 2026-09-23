@@ -25,6 +25,32 @@ struct riscv_sbi_hsm_rproc {
 	int irq;
 };
 
+static int rproc_mem_entry_memremap_wb(struct rproc *rproc,
+				       struct rproc_mem_entry *mem)
+{
+	void *va;
+
+	va = memremap(mem->dma, mem->len, MEMREMAP_WB);
+	if (!va) {
+		dev_err(&rproc->dev, "Unable to map memory region: %pa+%zx\n",
+			&mem->dma, mem->len);
+		return -ENOMEM;
+	}
+
+	mem->va = (void *)va;
+	mem->is_iomem = true;
+
+	return 0;
+}
+
+static int rproc_mem_entry_memunmap(struct rproc *rproc,
+				    struct rproc_mem_entry *mem)
+{
+	memunmap(mem->va);
+
+	return 0;
+}
+
 static int riscv_sbi_hsm_rproc_prepare(struct rproc *rproc)
 {
 	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
@@ -41,8 +67,8 @@ static int riscv_sbi_hsm_rproc_prepare(struct rproc *rproc)
 
 		mem = rproc_mem_entry_init(priv->dev, NULL, (dma_addr_t)res.start,
 					   resource_size(&res), res.start,
-					   rproc_mem_entry_ioremap_wc,
-					   rproc_mem_entry_iounmap,
+					   rproc_mem_entry_memremap_wb,
+					   rproc_mem_entry_memunmap,
 					   "%.*s", strchrnul(res.name, '@') - res.name,
 					   res.name);
 
@@ -201,6 +227,9 @@ static void riscv_sbi_hsm_rproc_free_msis(void *data)
 	platform_device_msi_free_irqs_all(dev);
 }
 
+static bool __read_mostly auto_boot = true;
+module_param(auto_boot, bool, 0444);
+
 static int riscv_sbi_hsm_rproc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -219,6 +248,8 @@ static int riscv_sbi_hsm_rproc_probe(struct platform_device *pdev)
 				 fw_name, sizeof(*priv));
 	if (!rproc)
 		return -ENOMEM;
+
+	rproc->auto_boot = auto_boot;
 
 	platform_set_drvdata(pdev, rproc);
 	priv = rproc->priv;

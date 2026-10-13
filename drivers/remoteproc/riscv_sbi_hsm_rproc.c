@@ -165,6 +165,7 @@ static int riscv_sbi_hsm_rproc_stop(struct rproc *rproc)
 
 	dev_info(dev, "Stopping secondary hart %u", priv->bootstrap_hart);
 
+	// FIXME: Stop all rproc harts
 	srt = sbi_ecall(SBI_EXT_REMOTE_STOP, SBI_REMOTE_STOP_SYNC,
 			1UL, priv->bootstrap_hart,
 			0, 0, 0, 0);
@@ -267,6 +268,7 @@ static int riscv_sbi_hsm_rproc_probe(struct platform_device *pdev)
 	priv->dev = dev;
 	priv->rproc = rproc;
 
+	// FIXME
 	ret = of_property_read_u32(dev->of_node, "openruyi,bootstrap-hart", &priv->bootstrap_hart);
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "Required openruyi,bootstrap-hart not found\n");

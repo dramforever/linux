@@ -166,7 +166,7 @@ static int riscv_sbi_hsm_rproc_stop(struct rproc *rproc)
 	dev_info(dev, "Stopping secondary hart %u", priv->bootstrap_hart);
 
 	srt = sbi_ecall(SBI_EXT_REMOTE_STOP, SBI_REMOTE_STOP_SYNC,
-			1, priv->bootstrap_hart,
+			1UL, priv->bootstrap_hart,
 			0, 0, 0, 0);
 	ret = sbi_err_map_linux_errno(srt.error);
 	if (ret < 0) {
@@ -187,7 +187,17 @@ static void riscv_sbi_hsm_rproc_kick(struct rproc *rproc, int vqid)
 {
 	struct riscv_sbi_hsm_rproc *priv = rproc->priv;
 	struct device *dev = priv->dev;
-	dev_err(dev, "stub %s(%d)\n", __func__, vqid);
+	struct sbiret srt;
+	int ret;
+
+	srt = sbi_ecall(SBI_EXT_IPI, SBI_EXT_IPI_SEND_IPI,
+			1UL, priv->bootstrap_hart,
+			0, 0, 0, 0);
+	ret = sbi_err_map_linux_errno(srt.error);
+
+	/* No way to return error */
+	if (ret < 0)
+		dev_err_ratelimited(dev, "Failed to kick: %pe\n", ERR_PTR(ret));
 }
 
 static void riscv_sbi_hsm_rproc_write_msi_msg(struct msi_desc *desc, struct msi_msg *msg)

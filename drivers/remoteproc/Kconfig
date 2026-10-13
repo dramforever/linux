@@ -315,10 +315,12 @@ config RISCV_SBI_HSM_RPROC
 	tristate "RISC-V SBI HSM remoteproc support"
 	depends on RISCV_SBI
 	depends on 64BIT # For 64-bit WRITE_ONCE
+	select GENERIC_MSI_IRQ
 	help
 	  Say y here to support certain RISC-V systems containing
-	  firmware-managed harts that are not suitable for use as CPUs from the
-	  perspective of a rich operating system such as Linux.
+	  firmware-managed harts that are managed by SBI HSM, but are not
+	  suitable for use as CPUs from the perspective of a rich operating
+	  system such as Linux.
 
 	  If compiled as module, the module name is riscv_sbi_hsm_rproc.
 
